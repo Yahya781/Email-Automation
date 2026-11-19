@@ -69,6 +69,20 @@ class Queue:
                 spreadsheetId=self.sheet_id, body={"valueInputOption": "RAW", "data": data}).execute()
 
 
+    def append(self, rows: list[dict]):
+        """Add new rows at the bottom. Each dict's keys are header names; columns it leaves out stay empty."""
+        values = []
+        for row in rows:
+            for name in row:
+                if name not in self.header:
+                    raise KeyError(f"no column called {name}")
+            values.append([str(row.get(h, "")) for h in self.header])
+        if values:
+            self.svc.values().append(
+                spreadsheetId=self.sheet_id, range=f"'{self.tab}'!A1", valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS", body={"values": values}).execute()
+
+
 class Mail:
     def __init__(self, creds):
         self.svc = build("gmail", "v1", credentials=creds, cache_discovery=False).users()

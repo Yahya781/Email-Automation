@@ -1,4 +1,4 @@
-name: daily-outreach-drafts
+name: daily-outreach-leads
 
 on:
   schedule:
@@ -20,6 +20,19 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
+      - run: python discover_leads.py
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+          DISCOVER_LIMIT: ${{ vars.DISCOVER_LIMIT || '10' }}
+          DISCOVER_INDUSTRIES: ${{ vars.DISCOVER_INDUSTRIES }}
+          DISCOVER_HEADCOUNT: ${{ vars.DISCOVER_HEADCOUNT }}
+          DISCOVER_COUNTRIES: ${{ vars.DISCOVER_COUNTRIES }}
+          DISCOVER_KEYWORDS: ${{ vars.DISCOVER_KEYWORDS }}
       - run: python find_emails.py
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
@@ -28,17 +41,3 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
-      - run: python run_daily.py
-        env:
-          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
-          DAILY_LIMIT: ${{ vars.DAILY_LIMIT || '5' }}
-          OUTREACH_START_DATE: ${{ vars.OUTREACH_START_DATE }}

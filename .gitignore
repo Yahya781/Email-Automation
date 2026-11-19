@@ -3,3 +3,9 @@ client_secret.json
 token.json
 __pycache__/
 .pytest_cache/
+refresh_token.txt
+client_secret*.json
+*secret*.json
+credentials*.json
+token*.json
+.env*

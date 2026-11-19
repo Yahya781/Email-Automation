@@ -12,6 +12,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    environment: refresh_token.txt   # the GitHub Environment that holds the 5 secrets
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +25,8 @@ jobs:
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
           DISCOVER_LIMIT: ${{ vars.DISCOVER_LIMIT || '10' }}
@@ -37,7 +38,7 @@ jobs:
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}

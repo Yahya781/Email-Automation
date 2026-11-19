@@ -50,6 +50,7 @@ def _run(monkeypatch, rows, lookup, domain_search=_no_domain_search):
     monkeypatch.setattr(find_emails, "credentials", lambda: None)
     monkeypatch.setattr(find_emails, "hunter_lookup", lookup)
     monkeypatch.setattr(find_emails, "hunter_domain_search", domain_search)
+    monkeypatch.setattr(find_emails, "hunter_credits_left", lambda key: 42)
     monkeypatch.setattr(find_emails, "DRY", False)
     find_emails.main()
     return q.updates
@@ -132,31 +133,79 @@ def test_pick_person_enforces_score_threshold():
     assert find_emails.pick_person([person("f@a.com", "Founder", 70)], 70)[0] == "f@a.com"
 
 
-def test_domain_search_writes_suggestion_and_note_but_never_verified_or_status(monkeypatch):
+def test_domain_search_writes_only_suggested_email_and_confidence(monkeypatch):
     ds = lambda d, k: [person("al@a.com", "Co-founder & CEO", 88)]
     ups = _run(monkeypatch, [nofounder()], lambda *a: (None, 0), ds)
-    fields = ups[0][1]
-    assert fields["Suggested email"] == "al@a.com"
-    assert fields["Email confidence"].startswith("88")
-    assert fields["Notes"] == "Hunter: Al Lee, Co-founder & CEO"
-    assert "Verified email" not in fields and "Status" not in fields and find_emails.FOUNDER_COL not in fields
+    assert ups[0][1] == {"Suggested email": "al@a.com", "Email confidence": "88 (check before use)"}
 
 
-def test_domain_search_never_overwrites_existing_notes(monkeypatch):
-    ds = lambda d, k: [person("al@a.com", "CEO")]
-    ups = _run(monkeypatch, [nofounder(Notes="mine")], lambda *a: (None, 0), ds)
-    assert ups[0][1]["Suggested email"] == "al@a.com" and "Notes" not in ups[0][1]
-
-
-def test_domain_search_no_match_marks_none_found(monkeypatch):
-    ds = lambda d, k: [person("info@a.com", "CEO"), person("dev@a.com", "Engineer")]
+def test_domain_search_no_match_marks_none_found_with_best_score(monkeypatch):
+    ds = lambda d, k: [person("info@a.com", "CEO", 99), person("dev@a.com", "Engineer", 95),
+                       person("f@a.com", "Founder", 55)]
     ups = _run(monkeypatch, [nofounder()], lambda *a: (None, 0), ds)
+    assert ups[0][1] == {"Suggested email": "none found", "Email confidence": "55"}
+    ups = _run(monkeypatch, [nofounder()], lambda *a: (None, 0), lambda d, k: [])
     assert ups[0][1] == {"Suggested email": "none found", "Email confidence": "0"}
+
+
+def test_none_found_rows_are_not_looked_up_again(monkeypatch):
+    rows = [nofounder(**{"Suggested email": "none found"}), lead(**{"Suggested email": "none found"})]
+    assert _run(monkeypatch, rows, lambda *a: ("x@a.com", 90)) == []  # default fakes raise if called
+
+
+def test_row_without_website_is_skipped(monkeypatch):
+    assert _run(monkeypatch, [lead(Website=""), nofounder(Website="")], lambda *a: ("x@a.com", 90)) == []
+
+
+def test_summary_line(monkeypatch, capsys):
+    rows = [lead(_row=2), lead(_row=3), nofounder(_row=4), nofounder(_row=5)]
+    results = iter([("jo@a.com", 90), (None, 0)])
+    ds = iter([[person("al@a.com", "CEO")], None])
+    _run(monkeypatch, rows, lambda *a: next(results), lambda d, k: next(ds))
+    out = capsys.readouterr().out
+    assert "Summary: rows checked 4, suggested 2, none found 1, failed 1, credits left 42" in out
+
+
+def test_summary_reports_stop_and_unknown_credits(monkeypatch, capsys):
+    def boom(d, k):
+        raise RuntimeError("Hunter usage limit reached (credits used up)")
+    monkeypatch.setattr(find_emails, "hunter_credits_left", lambda key: None)
+    q = FakeQueue([nofounder()])
+    monkeypatch.setenv("HUNTER_API_KEY", "k")
+    monkeypatch.setenv("SHEET_ID", "s")
+    monkeypatch.setattr(find_emails, "Queue", lambda *a, **k: q)
+    monkeypatch.setattr(find_emails, "credentials", lambda: None)
+    monkeypatch.setattr(find_emails, "hunter_domain_search", boom)
+    monkeypatch.setattr(find_emails, "DRY", False)
+    find_emails.main()
+    out = capsys.readouterr().out
+    assert "credits left unknown" in out and "Stopped early: Hunter usage limit reached" in out and q.updates == []
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._b = status, body
+
+    def json(self):
+        return self._b
+
+
+def test_credits_left_parsing_and_failures(monkeypatch):
+    def get(body, status=200):
+        monkeypatch.setattr(find_emails.requests, "get", lambda *a, **k: _Resp(status, body))
+    get({"data": {"requests": {"credits": {"used": 120, "available": 500}}}})
+    assert find_emails.hunter_credits_left("k") == 380
+    get({"data": {"requests": {"searches": {"used": 5, "available": 25}}}})
+    assert find_emails.hunter_credits_left("k") == 20
+    get({}, 401)
+    assert find_emails.hunter_credits_left("k") is None
+    get({"data": {}})
+    assert find_emails.hunter_credits_left("k") is None
 
 
 def test_domain_search_not_used_when_founder_name_exists(monkeypatch):
     ups = _run(monkeypatch, [lead()], lambda f, l, d, k: ("jo@a.com", 91))  # default fake raises if called
-    assert ups[0][1]["Suggested email"] == "jo@a.com" and "Notes" not in ups[0][1]
+    assert set(ups[0][1]) == {"Suggested email", "Email confidence"}
 
 
 def test_limit_counts_both_lookup_types_together(monkeypatch):
@@ -187,6 +236,7 @@ def test_dry_run_writes_nothing(monkeypatch):
     monkeypatch.setattr(find_emails, "Queue", lambda *a, **k: q)
     monkeypatch.setattr(find_emails, "credentials", lambda: None)
     monkeypatch.setattr(find_emails, "hunter_domain_search", lambda d, k: [person("al@a.com", "CEO")])
+    monkeypatch.setattr(find_emails, "hunter_credits_left", lambda key: 42)
     monkeypatch.setattr(find_emails, "DRY", True)
     find_emails.main()
     assert q.updates == []

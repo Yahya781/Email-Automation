@@ -2,8 +2,7 @@
 Uses the Hunter.io Email Finder API when there is a founder name, and falls back to Hunter Domain Search (pick the
 founder/CEO from the domain's known people) when there is not. Free plan has a small monthly credit allowance.
 
-It ONLY writes the 'Suggested email' and 'Email confidence' columns (plus 'Notes', only if empty, on a Domain
-Search hit, as "Hunter: Name, Position"). It never fills 'Verified email' and never
+It ONLY writes the 'Suggested email' and 'Email confidence' columns. It never fills 'Verified email' and never
 changes Status: you look at the suggestion, check it, copy it into 'Verified email' and set Status to Ready.
 Set DRY_RUN=1 to print only."""
 import os
@@ -90,10 +89,8 @@ def _role_rank(position: str):
     return None
 
 
-def pick_person(emails, min_score):
-    """Pick ONE named person from Domain Search results: founder/CEO preferred, then owner/head of product.
-    Ignores generic addresses and anything under min_score. Returns (email, score, name, position) or None."""
-    best = None
+def _candidates(emails):
+    """Named, non-generic people with a matching role: (rank, score, email, name, position)."""
     for e in emails or []:
         addr = (e.get("value") or "").strip()
         if not addr or "@" not in addr or e.get("type") == "generic":
@@ -106,14 +103,42 @@ def pick_person(emails, min_score):
             score = int(e.get("confidence") or 0)
         except (TypeError, ValueError):
             score = 0
-        if rank is None or score < min_score:
-            continue
         name = " ".join(p for p in (e.get("first_name"), e.get("last_name")) if p).strip()
-        if not name:
+        if rank is None or not name:
             continue
-        if best is None or (rank, -score) < best[0]:
-            best = ((rank, -score), addr, score, name, position)
-    return None if best is None else best[1:]
+        yield rank, score, addr, name, position
+
+
+def pick_person(emails, min_score):
+    """Pick ONE named person from Domain Search results: founder/CEO preferred, then owner/head of product.
+    Ignores generic addresses and anything under min_score. Returns (email, score, name, position) or None."""
+    ok = [c for c in _candidates(emails) if c[1] >= min_score]
+    if not ok:
+        return None
+    rank, score, addr, name, position = min(ok, key=lambda c: (c[0], -c[1]))
+    return addr, score, name, position
+
+
+def best_score(emails):
+    """Highest confidence among role-matching people (0 if none), written next to 'none found'."""
+    return max((c[1] for c in _candidates(emails)), default=0)
+
+
+def hunter_credits_left(key):
+    """Credits (or searches) left this billing period from the free GET /v2/account call, else None.
+    Hunter's lookup responses only say how much that one request used, so this asks the account once per run."""
+    try:
+        r = requests.get("https://api.hunter.io/v2/account", params={"api_key": key}, timeout=30)
+        if r.status_code != 200:
+            return None
+        reqs = ((r.json() or {}).get("data") or {}).get("requests") or {}
+        for kind in ("credits", "searches"):
+            b = reqs.get(kind) or {}
+            if b.get("available") is not None and b.get("used") is not None:
+                return max(int(b["available"]) - int(b["used"]), 0)
+    except (requests.RequestException, ValueError, TypeError):
+        pass
+    return None
 
 
 def main():
@@ -123,54 +148,53 @@ def main():
         return
     q = Queue(credentials(), os.environ["SHEET_ID"], os.environ.get("QUEUE_TAB", "Outreach Queue"))
     rows = q.load()
-    done = 0  # lookups of either type, against EMAIL_LOOKUP_LIMIT
+    checked = suggested = none_found = failed = 0  # checked = lookups made, against EMAIL_LOOKUP_LIMIT
+    stopped = None
+
+    def save(r, email, conf):
+        if not DRY:
+            q.update(r["_row"], **{"Suggested email": email, "Email confidence": conf})
+
     for r in rows:
-        if done >= LIMIT:
+        if checked >= LIMIT:
             break
         if r.get("Status") not in STATUSES or r.get("Verified email", "").strip() or r.get("Suggested email", "").strip():
             continue
         name, domain = founder_name(r.get(FOUNDER_COL, "")), domain_of(r.get("Website", ""))
         if not domain:
             continue
-        if not name:
-            # No usable founder name: fall back to Domain Search.
-            try:
-                emails = hunter_domain_search(domain, key)
-            except RuntimeError as e:
-                log("stopping:", e)
-                break
-            done += 1
-            if emails is None:
-                log(f"[{r['Company']}] domain search failed, skipped")
-                continue
-            hit = pick_person(emails, MIN_SCORE)
-            if not hit:
-                log(f"[{r['Company']}] domain search: no confident founder/CEO match")
-                if not DRY:
-                    q.update(r["_row"], **{"Suggested email": "none found", "Email confidence": "0"})
-                continue
-            email, score, person, position = hit
-            log(f"[{r['Company']}] domain search suggested {email} (score {score}, {position})")
-            if not DRY:
-                fields = {"Suggested email": email, "Email confidence": f"{score} (check before use)"}
-                if "Notes" in r and not r["Notes"].strip():  # never overwrite an existing note
-                    fields["Notes"] = f"Hunter: {person}, {position}"
-                q.update(r["_row"], **fields)
-            continue
         try:
-            email, score = hunter_lookup(name[0], name[1], domain, key)
+            if name:  # a founder name exists: Email Finder
+                email, score = hunter_lookup(name[0], name[1], domain, key)
+                checked += 1
+                note = ""
+            else:  # no usable founder name: Domain Search for a founder/CEO
+                emails = hunter_domain_search(domain, key)
+                checked += 1
+                if emails is None:
+                    failed += 1
+                    log(f"[{r['Company']}] domain search failed, skipped")
+                    continue
+                hit = pick_person(emails, MIN_SCORE)
+                email, score = (hit[0], hit[1]) if hit else (None, best_score(emails))
+                note = f", {hit[3]}" if hit else ""
         except RuntimeError as e:
+            stopped = str(e)
             log("stopping:", e)
             break
-        done += 1
         if not email or score < MIN_SCORE:
+            none_found += 1
             log(f"[{r['Company']}] no confident match (score {score})")
-            if not DRY:
-                q.update(r["_row"], **{"Suggested email": "none found", "Email confidence": str(score)})
-            continue
-        log(f"[{r['Company']}] suggested {email} (score {score})")
-        if not DRY:
-            q.update(r["_row"], **{"Suggested email": email, "Email confidence": f"{score} (check before use)"})
+            save(r, "none found", str(score))
+        else:
+            suggested += 1
+            log(f"[{r['Company']}] suggested {email} (score {score}{note})")
+            save(r, email, f"{score} (check before use)")
+
+    left = hunter_credits_left(key)
+    log(f"Summary{' (dry run, nothing written)' if DRY else ''}: rows checked {checked}, suggested {suggested}, "
+        f"none found {none_found}, failed {failed}, credits left {'unknown' if left is None else left}"
+        + (f". Stopped early: {stopped}" if stopped else ""))
 
 
 if __name__ == "__main__":

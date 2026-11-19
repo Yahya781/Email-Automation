@@ -87,9 +87,10 @@ def test_filters_have_defaults_and_empty_env_uses_them(monkeypatch):
     assert discover_leads.build_filters()["headquarters_location"]["include"] == [{"country": "DE"}, {"country": "FR"}]
 
 
-def test_workflow_needs_no_llm_and_runs_discover_before_find_emails():
+def test_workflow_runs_only_find_emails_with_no_llm_or_discover():
     text = open(os.path.join(ROOT, ".github", "workflows", "daily.yml"), encoding="utf-8").read()
-    for banned in ("run_daily", "GEMINI", "ANTHROPIC", "LLM_"):
+    for banned in ("run_daily", "discover_leads", "DISCOVER_", "GEMINI", "ANTHROPIC", "LLM_"):
         assert banned not in text
-    assert text.index("discover_leads.py") < text.index("find_emails.py")
+    assert text.startswith("name: daily-email-finder")
+    assert text.count("python find_emails.py") == 1
     assert "HUNTER_API_KEY" in text and "GOOGLE_REFRESH_TOKEN" in text

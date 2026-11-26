@@ -2,7 +2,7 @@ name: daily-email-finder
 
 on:
   schedule:
-    - cron: "30 4 * * *"   # 09:30 Pakistan time (04:30 UTC)
+    - cron: "0 17 * * *"    # 10 PM Pakistan time (17:00 UTC)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -23,6 +23,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python find_emails.py
         env:
+          EMAIL_LOOKUP_LIMIT: "20"
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           GOOGLE_CLIENT_ID: ${{ secrets.CLIENT_ID }}

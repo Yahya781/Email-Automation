@@ -2,9 +2,10 @@
 Uses the Hunter.io Email Finder API when there is a founder name, and falls back to Hunter Domain Search (pick the
 founder/CEO from the domain's known people) when there is not. Free plan has a small monthly credit allowance.
 
-If PROSPEO_API_KEY is set, Prospeo takes over for the rest of the run as soon as Hunter cannot continue (credits used
-up, rate limit, bad key): Enrich Person when there is a founder name, else Search Person + Enrich Person for the
-founder/CEO. Prospeo only suggests verified emails by default (PROSPEO_ONLY_VERIFIED=0 to allow others).
+If PROSPEO_API_KEY is set, rows Hunter marked 'none found' get one more try on Prospeo (never on Hunter again), and
+Prospeo takes over for the rest of the run as soon as Hunter cannot continue (credits used up, rate limit, bad key):
+Enrich Person when there is a founder name, else Search Person + Enrich Person for the founder/CEO. Prospeo only
+suggests verified emails by default (PROSPEO_ONLY_VERIFIED=0 to allow others).
 
 It ONLY writes the 'Suggested email' and 'Email confidence' columns. It never fills 'Verified email' and never
 changes Status: you look at the suggestion, check it, copy it into 'Verified email' and set Status to Ready.
@@ -309,17 +310,23 @@ def main():
     for r in rows:
         if checked >= LIMIT or stopped:
             break
-        if r.get("Status") not in STATUSES or r.get("Verified email", "").strip() or r.get("Suggested email", "").strip():
+        if r.get("Status") not in STATUSES or r.get("Verified email", "").strip():
+            continue
+        suggestion = r.get("Suggested email", "").strip()
+        # Hunter's 'none found' rows get one more try on Prospeo (never on Hunter again, so no Hunter credits spent)
+        retry = bool(pkey) and suggestion == "none found" and "prospeo" not in r.get("Email confidence", "").lower()
+        if suggestion and not retry:
             continue
         name, domain = founder_name(r.get(FOUNDER_COL, "")), domain_of(r.get("Website", ""))
         if not domain:
             continue
         while True:
+            on_prospeo = use_prospeo or retry
             try:
-                res = (_prospeo_result if use_prospeo else _hunter_result)(r, name, domain, pkey if use_prospeo else hkey)
+                res = (_prospeo_result if on_prospeo else _hunter_result)(r, name, domain, pkey if on_prospeo else hkey)
                 break
             except RuntimeError as e:
-                if not use_prospeo and pkey:  # Hunter ran out (or refused): retry this row on Prospeo
+                if not on_prospeo and pkey:  # Hunter ran out (or refused): retry this row on Prospeo
                     use_prospeo = True
                     log(f"Hunter stopped ({e}); switching to Prospeo for the rest of this run")
                     continue
@@ -330,7 +337,7 @@ def main():
         if res is False:
             break
         checked += 1
-        via_prospeo += use_prospeo
+        via_prospeo += on_prospeo
         if res is None:
             failed += 1
             log(f"[{r['Company']}] lookup failed, skipped")

@@ -237,3 +237,39 @@ def test_429_with_no_daily_requests_left_stops_without_waiting(monkeypatch, slee
     with pytest.raises(RuntimeError, match="daily request limit"):
         find_emails.prospeo_find("Jo", "Smith", "a.com", "k")
     assert len(post.calls) == 1 and sleeps == [find_emails.PROSPEO_DELAY]
+
+
+def test_hunter_none_found_rows_are_retried_on_prospeo_only(monkeypatch):
+    rows = [lead(_row=2, **{"Suggested email": "none found", "Email confidence": "0"}),
+            lead(_row=3, **{"Suggested email": "none found", "Email confidence": "55"}),
+            lead(_row=4, **{"Suggested email": "x@a.com", "Email confidence": "90 (check before use)"})]
+    calls = []
+    ups = _run(monkeypatch, rows, prospeo=lambda f, l, d, k: calls.append(d) or ("pro@a.com", "VERIFIED"))
+    assert len(calls) == 2                                   # Hunter (the 'never' fake) was not called at all
+    assert [(u[0], u[1]["Suggested email"]) for u in ups] == [(2, "pro@a.com"), (3, "pro@a.com")]
+    assert all(set(u[1]) == {"Suggested email", "Email confidence"} for u in ups)
+
+
+def test_prospeo_none_found_rows_are_not_retried_again(monkeypatch):
+    rows = [lead(**{"Suggested email": "none found", "Email confidence": "no match (Prospeo)"})]
+    assert _run(monkeypatch, rows) == []                     # both fakes raise if called
+
+
+def test_none_found_rows_stay_untouched_without_a_prospeo_key(monkeypatch):
+    rows = [lead(**{"Suggested email": "none found", "Email confidence": "0"})]
+    assert _run(monkeypatch, rows, pkey=None) == []
+
+
+def test_retry_that_finds_nothing_marks_it_prospeo_so_it_is_not_repeated(monkeypatch):
+    rows = [lead(**{"Suggested email": "none found", "Email confidence": "0"})]
+    ups = _run(monkeypatch, rows, prospeo=lambda *a: "")
+    assert ups[0][1] == {"Suggested email": "none found", "Email confidence": "no match (Prospeo)"}
+
+
+def test_retry_rows_do_not_switch_the_rest_of_the_run_off_hunter(monkeypatch):
+    rows = [lead(_row=2, **{"Suggested email": "none found", "Email confidence": "0"}), lead(_row=3, Website="https://b.com")]
+    hunter_calls = []
+    ups = _run(monkeypatch, rows, lambda f, l, d, k: hunter_calls.append(d) or ("h@b.com", 90),
+               lambda *a: ("pro@a.com", "VERIFIED"))
+    assert hunter_calls == ["b.com"]
+    assert [u[1]["Suggested email"] for u in ups] == ["pro@a.com", "h@b.com"]

@@ -10,6 +10,14 @@ import find_emails  # noqa: E402
 from test_find_emails import FakeQueue, lead, nofounder  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch):
+    """Never really sleep in tests; record the waits instead."""
+    waits = []
+    monkeypatch.setattr(find_emails.time, "sleep", waits.append)
+    return waits
+
+
 def hunter_out(*a):
     raise RuntimeError("Hunter usage limit reached (credits used up)")
 
@@ -106,8 +114,9 @@ def test_limit_is_shared_and_dry_run_writes_nothing(monkeypatch):
 # ---- the HTTP layer, with a fake requests module (no network) ----
 
 class Resp:
-    def __init__(self, status=200, body=None):
+    def __init__(self, status=200, body=None, headers=None):
         self.status_code, self._b = status, body if body is not None else {}
+        self.headers = headers or {}
 
     def json(self):
         return self._b
@@ -147,7 +156,7 @@ def test_prospeo_find_no_match_masked_and_errors(monkeypatch):
     for resp, msg in ((Resp(400, {"error": True, "error_code": "INSUFFICIENT_CREDITS"}), "credits used up"),
                       (Resp(400, {"error": True, "error_code": "INVALID_API_KEY"}), "rejected the API key"),
                       (Resp(429, {}), "rate limit")):
-        monkeypatch.setattr(find_emails.requests, "post", FakePost(resp))
+        monkeypatch.setattr(find_emails.requests, "post", FakePost(*[resp] * (find_emails.PROSPEO_RETRIES + 1)))
         with pytest.raises(RuntimeError, match=msg) as exc:
             find_emails.prospeo_find("Jo", "Smith", "a.com", "SECRET")
         assert "SECRET" not in str(exc.value)
@@ -197,3 +206,34 @@ def test_prospeo_credits_left(monkeypatch):
     assert find_emails.prospeo_credits_left("k") is None
     get(Resp(200, {"response": {}}))
     assert find_emails.prospeo_credits_left("k") is None
+
+
+def test_requests_are_paced_and_429_is_retried_with_a_wait(monkeypatch, sleeps):
+    post = FakePost(Resp(429, {}), Resp(429, {}), ok_email())
+    monkeypatch.setattr(find_emails.requests, "post", post)
+    assert find_emails.prospeo_find("Jo", "Smith", "a.com", "k") == ("jo@a.com", "VERIFIED")
+    assert len(post.calls) == 3                                   # two 429s, then success: the run carries on
+    assert sleeps == [find_emails.PROSPEO_DELAY, 2, find_emails.PROSPEO_DELAY, 4, find_emails.PROSPEO_DELAY]
+
+
+def test_429_waits_for_the_minute_reset_header(monkeypatch, sleeps):
+    limited = Resp(429, {}, {"x-minute-request-left": "0", "x-minute-reset-seconds": "17"})
+    monkeypatch.setattr(find_emails.requests, "post", FakePost(limited, ok_email()))
+    find_emails.prospeo_find("Jo", "Smith", "a.com", "k")
+    assert 18 in sleeps
+
+
+def test_429_gives_up_after_the_retries_and_stops_the_run_cleanly(monkeypatch):
+    post = FakePost(*[Resp(429, {}) for _ in range(find_emails.PROSPEO_RETRIES + 1)])
+    monkeypatch.setattr(find_emails.requests, "post", post)
+    with pytest.raises(RuntimeError, match="rate limit reached"):
+        find_emails.prospeo_find("Jo", "Smith", "a.com", "k")
+    assert len(post.calls) == find_emails.PROSPEO_RETRIES + 1
+
+
+def test_429_with_no_daily_requests_left_stops_without_waiting(monkeypatch, sleeps):
+    post = FakePost(Resp(429, {}, {"x-daily-request-left": "0"}))
+    monkeypatch.setattr(find_emails.requests, "post", post)
+    with pytest.raises(RuntimeError, match="daily request limit"):
+        find_emails.prospeo_find("Jo", "Smith", "a.com", "k")
+    assert len(post.calls) == 1 and sleeps == [find_emails.PROSPEO_DELAY]

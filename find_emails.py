@@ -11,6 +11,7 @@ changes Status: you look at the suggestion, check it, copy it into 'Verified ema
 Set DRY_RUN=1 to print only."""
 import os
 import re
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -147,6 +148,8 @@ def hunter_credits_left(key):
 
 PROSPEO_URL = "https://api.prospeo.io"
 PROSPEO_ONLY_VERIFIED = (os.environ.get("PROSPEO_ONLY_VERIFIED") or "1") != "0"  # default: verified emails only
+PROSPEO_DELAY = float(os.environ.get("PROSPEO_DELAY") or "1")  # seconds before each Prospeo request
+PROSPEO_RETRIES = 3  # extra tries after an HTTP 429 before giving up for this run
 _TWO_PART_TLDS = {"co", "com", "org", "net", "gov", "ac", "edu"}
 
 
@@ -162,10 +165,21 @@ def root_domain(domain: str) -> str:
 def _prospeo_post(path, body, key):
     """POST to Prospeo. Returns the parsed JSON body (always a dict). Raises RuntimeError when the run should stop
     using Prospeo (rate limit, credits used up, bad key). The key only goes in the X-KEY header, never in a message."""
-    r = requests.post(PROSPEO_URL + path, headers={"X-KEY": key, "Content-Type": "application/json"},
-                      json=body, timeout=60)
-    if r.status_code == 429:
-        raise RuntimeError("Prospeo rate limit reached")
+    for attempt in range(PROSPEO_RETRIES + 1):
+        time.sleep(PROSPEO_DELAY)  # stay under per-second limits instead of firing requests back to back
+        r = requests.post(PROSPEO_URL + path, headers={"X-KEY": key, "Content-Type": "application/json"},
+                          json=body, timeout=60)
+        if r.status_code != 429:
+            break
+        h = getattr(r, "headers", None) or {}
+        if str(h.get("x-daily-request-left")) == "0":  # the daily allowance is gone: waiting will not help
+            raise RuntimeError("Prospeo daily request limit reached")
+        if attempt == PROSPEO_RETRIES:
+            raise RuntimeError("Prospeo rate limit reached")
+        reset = h.get("x-minute-reset-seconds") if str(h.get("x-minute-request-left")) == "0" else None
+        wait = int(reset) + 1 if str(reset).isdigit() and int(reset) <= 65 else 2 * (attempt + 1)
+        log(f"Prospeo rate limit, waiting {wait}s then retrying")
+        time.sleep(wait)
     try:
         data = r.json() or {}
     except ValueError:

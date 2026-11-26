@@ -4,7 +4,8 @@
 - Rows with a Website, no Verified email and no Suggested email get one Hunter lookup: Email Finder if the founder column has a name, otherwise Domain Search for a founder/CEO.
 - It writes only `Suggested email` and `Email confidence` (`none found` plus the score when nothing clears `EMAIL_MIN_SCORE`, default 70, so the row is not looked up again). It never writes Verified email or Status.
 - At most `EMAIL_LOOKUP_LIMIT` lookups per run (default 10, both types combined). On HTTP 429, a rate limit or used-up credits it stops cleanly. `DRY_RUN=1` prints only.
-- The run ends with a summary: rows checked, suggested, none found, failed, and credits left (read from Hunter's free account call, `unknown` if it fails).
+- **Prospeo fallback.** If `PROSPEO_API_KEY` is set and Hunter runs out of credits (or refuses: rate limit, bad key), the rest of that run uses Prospeo: Enrich Person when there is a founder name, otherwise Search Person for a founder/CEO and then Enrich Person for that one person (about 2 credits). Prospeo only suggests verified emails (`PROSPEO_ONLY_VERIFIED=0` allows others), has no numeric score, so `Email confidence` shows `VERIFIED via Prospeo`, and a miss writes `none found` / `no match (Prospeo)`. With no Hunter key at all it starts on Prospeo. Prospeo stopping (credits used up, rate limit, bad key) ends the run cleanly.
+- The run ends with a summary: rows checked, suggested, none found, failed, credits left (read from Hunter's free account call, `unknown` if it fails) and, if Prospeo is configured, how many lookups used Prospeo and its remaining credits.
 
 You then check each suggestion, copy it to **Verified email** and set Status to `Ready`. Drafts are written elsewhere. Nothing in this project sends email.
 
@@ -33,7 +34,7 @@ Status meanings: Needs review and Needs email (waiting for an email suggestion),
 3. Run `pip install -r requirements.txt` then `python auth_setup.py`. Log in as the outreach Gmail. Copy the three values it prints.
 4. **Hunter key** (free hunter.io account).
 5. **GitHub**: create a **private** repo and push this folder (the `.gitignore` keeps secrets out). Then in Settings > Secrets and variables > Actions add:
-   - Secrets: `SHEET_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `HUNTER_API_KEY`.
+   - Secrets: `SHEET_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `HUNTER_API_KEY`, and optionally `PROSPEO_API_KEY`.
 6. **First run:** Actions tab > daily-email-finder > Run workflow with `dry_run = 1`. Read the log and the summary line, then run with `dry_run = 0`.
 
 The schedule is 09:30 Pakistan time. Keep the repo private and push something now and then: GitHub pauses schedules on repos with no activity for 60 days.

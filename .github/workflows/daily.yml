@@ -29,3 +29,4 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+          PROSPEO_API_KEY: ${{ secrets.PROSPEO_API_KEY }}   # optional: used once Hunter credits run out
